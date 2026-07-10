@@ -1,44 +1,96 @@
-# D-squared Method
+﻿# D-squared QCEG Final
 
-D-squared is implemented on the original LLaVA path only. The pruning switch is off by default, so the same environment can run vanilla LLaVA for comparison.
+This is the cleaned final version of the D-squared code path. The repository keeps a single implementation directory named `D_squared_method`.
 
-## Setup
+## Main Behavior
 
-See `ENV_SETUP.md` for the local environment. In short, install the local original LLaVA package first, then the modified local `transformers` package:
+- Visual pruning stage is unchanged.
+- LLM-side secondary visual-token selection uses QCEG by default: question-conditioned entropy gain from four early hidden states.
+- Only user question tokens participate in QCEG conditioning. LLaVA wrapper tokens such as BOS/newline/`ASSISTANT:` are excluded.
+- `question_only` / BOS-free / all-query attention scores are kept only as debug and ablation references.
+- Formal evaluation defaults to no debug dump and no visualization output.
 
-```bash
-cd D_squared_method
-pip install -e src/LLaVA
-pip install -e src/transformers
-export PYTHONPATH="$PWD/src:$PYTHONPATH"
+Default D-squared config keys:
+
+```python
+model.config.d_squared_second_stage_method = "qceg"
+model.config.d_squared_qceg_tau = 0.1
+model.config.d_squared_query_score_mode = "question_only"
+model.config.d_squared_dump_selection_debug = False
+model.config.d_squared_static_kv_cache = True
+model.model.d_squared_question_query_positions = question_positions
 ```
 
-On PowerShell:
+## Question Span Utility
 
-```powershell
-$env:PYTHONPATH = "$PWD\src;$env:PYTHONPATH"
-```
-
-## D-squared Evaluation
-
-We follow FastV's evaluation style: use the official [LMMs-Eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) pipeline for benchmark evaluation, and patch the LLaVA model loaded by lmms-eval so it uses the local D-squared LLaVA/transformers implementation.
-
-Detailed steps are in:
+Question-token span extraction lives in:
 
 ```text
-src/D_squared_method/lmms-eval/README.md
+src/D_squared_method/question_span.py
 ```
 
-Baseline comparison is supported exactly like FastV:
+For LLaVA-v1.5, use `build_llava_prompt_with_question_spans`, `char_spans_to_original_token_positions`, and `map_original_positions_to_expanded` to map the original question text to expanded LLM sequence positions after the image token is expanded into visual tokens.
 
-- Do not set `model.config.use_d_squared`, or set it to `False`, to run vanilla LLaVA.
-- Set `model.config.use_d_squared = True` and call `model.model.reset_d_squared()` to enable D-squared.
-- Real token dropping requires `d_squared_inplace=True`, `use_cache=False`, and `output_attentions=True`.
+## Debug Dump On AutoDL
 
-The local non-lmms scripts are still available for quick debugging:
+Debug dump is opt-in and is not part of the clean performance path.
+Use the standalone toolkit at `../visualize_toolkit` for dump and plotting scripts. Generated dumps and figures should stay outside the code directory.
 
 ```bash
-bash ./src/D_squared_method/inference/eval/eval_ocrvqa_d_squared_token_mask.sh
-bash ./src/D_squared_method/inference/eval/eval_aokvqa_latency_d_squared_inplace.sh
+cd /root/autodl-tmp
+export PYTHONPATH="/root/autodl-tmp/D_squared_method/src:/root/autodl-tmp/D_squared_method/src/LLaVA:/root/autodl-tmp/D_squared_method/src/transformers/src:$PYTHONPATH"
+export CUDA_VISIBLE_DEVICES=0
+
+python visualize_toolkit/run_selection_debug_dump.py \
+  --model-path /root/autodl-tmp/models/llava-v1.5-7b \
+  --cases /root/autodl-tmp/sink_residual_20cases/cases.jsonl \
+  --output-dir /root/autodl-tmp/visualize/outputs/qceg_debug_k64 \
+  --visual-token-count 576 \
+  --visual-keep-count 32 \
+  --llm-keep-count 32 \
+  --d-squared-agg-layer 3 \
+  --second-stage-method qceg \
+  --qceg-tau 0.1 \
+  --query-score-mode question_only \
+  --question-source auto \
+  --d-squared-inplace
 ```
+
+Compress results for local visualization:
+
+```bash
+cd /root/autodl-tmp
+zip -r qceg_debug_k64.zip visualize/outputs/qceg_debug_k64
+```
+
+## Local Visualization
+
+Run locally after pulling debug `.pt` files back:
+
+```bash
+python E:\new_version\visualize_toolkit\local_selection_viz.py \
+  --dump-dir E:\new_version\qceg_debug_k64\visualize\outputs\qceg_debug_k64 \
+  --save-dir E:\new_version\visualize\figures\qceg_debug_k64 \
+  --image-root E:\new_version\sink_residual_20cases
+```
+
+The local tool writes panels, QCEG score/gain heatmaps, QCEG entropy curves, token CSVs, and overlap/debug reports. It is intentionally isolated from formal evaluation.
+
+## Clean Evaluation Notes
+
+For performance metrics, configure D-squared and question positions in the evaluation wrapper, then keep debug disabled:
+
+```python
+model.config.use_d_squared = True
+model.config.d_squared_inplace = True
+model.config.d_squared_second_stage_method = "qceg"
+model.config.d_squared_qceg_tau = 0.1
+model.config.d_squared_query_score_mode = "question_only"
+model.config.d_squared_dump_selection_debug = False
+model.config.d_squared_static_kv_cache = True
+model.model.d_squared_question_query_positions = question_positions
+model.model.reset_d_squared()
+```
+
+The wrapper must set `d_squared_question_query_positions` for each sample after prompt construction and image-token span mapping. If fewer than two question positions are available, the selector falls back to the attention-based path instead of crashing.
 

@@ -33,14 +33,14 @@ class LlavaConfig(LlamaConfig):
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
     config_class = LlavaConfig
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, **kwargs):
         super(LlavaLlamaModel, self).__init__(config)
 
 
 class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     config_class = LlavaConfig
 
-    def __init__(self, config):
+    def __init__(self, config, **kwargs):
         super(LlamaForCausalLM, self).__init__(config)
         self.model = LlavaLlamaModel(config)
         self.pretraining_tp = config.pretraining_tp
@@ -52,6 +52,22 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
     def get_model(self):
         return self.model
+
+    def generate(self, *args, **kwargs):
+        lmms_eval_generation = "image_sizes" in kwargs
+        input_ids = kwargs.get("input_ids", None)
+        if input_ids is None and len(args) > 0:
+            input_ids = args[0]
+        input_token_len = input_ids.shape[1] if lmms_eval_generation and input_ids is not None else None
+
+        outputs = super().generate(*args, **kwargs)
+
+        # lmms-eval decodes `generate()` outputs directly. Original LLaVA input_ids
+        # include IMAGE_TOKEN_INDEX=-200, so return only newly generated ids there.
+        if lmms_eval_generation and input_token_len is not None and isinstance(outputs, torch.Tensor):
+            outputs = outputs[:, input_token_len:]
+
+        return outputs
 
     def forward(
         self,
@@ -65,6 +81,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         images: Optional[torch.FloatTensor] = None,
+        image_sizes: Optional[torch.LongTensor] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
@@ -100,11 +117,14 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)
+        image_sizes = kwargs.pop("image_sizes", None)
         _inputs = super().prepare_inputs_for_generation(
             input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-        if images is not None:
+        if images is not None and past_key_values is None:
             _inputs['images'] = images
+        if image_sizes is not None and past_key_values is None:
+            _inputs['image_sizes'] = image_sizes
         return _inputs
 
 AutoConfig.register("llava", LlavaConfig)

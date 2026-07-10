@@ -100,11 +100,26 @@ class LlavaMetaForCausalLM(ABC):
 
     def prepare_d_squared_first_visual_indices(self, image_features):
         model = self.get_model()
-        model.d_squared_first_visual_indices = None
-        model.d_squared_second_visual_indices = None
-        model.d_squared_final_visual_indices = None
+        if hasattr(model, "reset_d_squared_runtime_state"):
+            model.reset_d_squared_runtime_state()
+        else:
+            model.d_squared_first_visual_indices = None
+            model.d_squared_second_visual_indices = None
+            model.d_squared_final_visual_indices = None
+            model.d_squared_expanded_input_ids = None
+            model.d_squared_last_selection_debug = None
 
         if not getattr(self.config, "use_d_squared", False):
+            return
+
+        if getattr(self.config, "d_squared_skip_visual_selector", False):
+            if isinstance(image_features, list):
+                if len(image_features) != 1:
+                    raise NotImplementedError("D-squared v1 supports one image sample at a time.")
+                device = image_features[0].device
+            else:
+                device = image_features.device
+            model.d_squared_first_visual_indices = torch.empty(0, dtype=torch.long, device=device)
             return
 
         keep_count = getattr(self.config, "d_squared_visual_keep_count", None)
@@ -130,6 +145,30 @@ class LlavaMetaForCausalLM(ABC):
         self, input_ids, position_ids, attention_mask, past_key_values, labels, images
     ):
         vision_tower = self.get_vision_tower()
+        model = self.get_model()
+        if (
+            past_key_values is not None
+            and input_ids.shape[1] == 1
+            and getattr(model, "d_squared_cache_active", False)
+        ):
+            cache_length = int(past_key_values[-1][-1].shape[-2])
+            mask_dtype = attention_mask.dtype if attention_mask is not None else torch.bool
+            attention_mask = torch.ones(
+                (input_ids.shape[0], cache_length + 1),
+                dtype=mask_dtype,
+                device=input_ids.device,
+            )
+            next_position_id = model.d_squared_next_position_id
+            if next_position_id is None:
+                next_position_id = cache_length
+            position_ids = torch.full(
+                (input_ids.shape[0], 1),
+                int(next_position_id),
+                dtype=torch.long,
+                device=input_ids.device,
+            )
+            model.d_squared_next_position_id = int(next_position_id) + 1
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             if past_key_values is not None and vision_tower is not None and images is not None and input_ids.shape[1] == 1:
                 target_shape = past_key_values[-1][-1].shape[-2] + 1
@@ -188,6 +227,7 @@ class LlavaMetaForCausalLM(ABC):
 
         new_input_embeds = []
         new_labels = []
+        new_expanded_input_ids = []
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
             num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
@@ -199,6 +239,7 @@ class LlavaMetaForCausalLM(ABC):
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])
+                new_expanded_input_ids.append(cur_input_ids)
                 cur_image_idx += 1
                 continue
 
@@ -214,38 +255,60 @@ class LlavaMetaForCausalLM(ABC):
             cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []
+            cur_new_input_ids = []
 
             for i in range(num_images + 1):
                 cur_new_input_embeds.append(cur_input_embeds_no_im[i])
                 cur_new_labels.append(cur_labels_noim[i])
+                cur_new_input_ids.append(cur_input_ids_noim[i])
                 if i < num_images:
                     cur_image_features = image_features[cur_image_idx]
                     cur_image_idx += 1
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
+                    cur_new_input_ids.append(
+                        torch.full(
+                            (cur_image_features.shape[0],),
+                            IMAGE_TOKEN_INDEX,
+                            device=cur_input_ids.device,
+                            dtype=cur_input_ids.dtype,
+                        )
+                    )
 
             cur_new_input_embeds = torch.cat(cur_new_input_embeds)
             cur_new_labels = torch.cat(cur_new_labels)
+            cur_new_input_ids = torch.cat(cur_new_input_ids)
 
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
+            new_expanded_input_ids.append(cur_new_input_ids)
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, 'tokenizer_model_max_length', None)
         if tokenizer_model_max_length is not None:
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
+            new_expanded_input_ids = [x[:tokenizer_model_max_length] for x in new_expanded_input_ids]
 
         # Combine them
         max_len = max(x.shape[0] for x in new_input_embeds)
         batch_size = len(new_input_embeds)
 
         new_input_embeds_padded = []
+        pad_token_id = getattr(self.config, "pad_token_id", 0)
+        if pad_token_id is None:
+            pad_token_id = 0
+        new_input_ids_padded = torch.full(
+            (batch_size, max_len),
+            int(pad_token_id),
+            dtype=new_expanded_input_ids[0].dtype,
+            device=new_expanded_input_ids[0].device,
+        )
         new_labels_padded = torch.full((batch_size, max_len), IGNORE_INDEX, dtype=new_labels[0].dtype, device=new_labels[0].device)
         attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
         position_ids = torch.zeros((batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device)
 
-        for i, (cur_new_embed, cur_new_labels) in enumerate(zip(new_input_embeds, new_labels)):
+        for i, (cur_new_embed, cur_new_labels, cur_new_ids) in enumerate(zip(new_input_embeds, new_labels, new_expanded_input_ids)):
             cur_len = cur_new_embed.shape[0]
             if getattr(self.config, 'tokenizer_padding_side', 'right') == "left":
                 new_input_embeds_padded.append(torch.cat((
@@ -254,6 +317,7 @@ class LlavaMetaForCausalLM(ABC):
                 ), dim=0))
                 if cur_len > 0:
                     new_labels_padded[i, -cur_len:] = cur_new_labels
+                    new_input_ids_padded[i, -cur_len:] = cur_new_ids
                     attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
             else:
@@ -263,10 +327,12 @@ class LlavaMetaForCausalLM(ABC):
                 ), dim=0))
                 if cur_len > 0:
                     new_labels_padded[i, :cur_len] = cur_new_labels
+                    new_input_ids_padded[i, :cur_len] = cur_new_ids
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
+        self.get_model().d_squared_expanded_input_ids = new_input_ids_padded.detach()
 
         if _labels is None:
             new_labels = None

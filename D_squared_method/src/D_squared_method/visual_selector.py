@@ -91,6 +91,8 @@ def select_visual_token_indices(
     keep_num = min(int(keep_num), token_count)
     candidate_num = min(max(keep_num, math.ceil(candidate_ratio * keep_num)), token_count)
 
+    # 公式对应：先把 visual token 特征归一化，用 cosine similarity 得到两两相似度，
+    # 再转成距离 d(i,j)=1-cos(i,j)，后面的覆盖性和密度都基于这个距离矩阵。
     x = F.normalize(visual_tokens.float(), dim=-1)
     similarity = x @ x.transpose(0, 1)
     distance = 1.0 - similarity
@@ -100,11 +102,15 @@ def select_visual_token_indices(
 
     diag = torch.arange(token_count, device=device)
     distance[diag, diag] = float("inf")
+    # 公式对应：第一个候选点取“离自己最近邻也尽量远”的点，
+    # 即 argmax_i min_{j != i} d(i,j)，保证初始点有较强覆盖性。
     nearest_dist = distance.min(dim=1).values
     first_idx = torch.argmax(nearest_dist)
     distance[diag, diag] = 0.0
 
     candidate_idx[0] = first_idx
+    # 公式对应：min_dist_to_selected[t] = min_{s in S} d(t,s)，
+    # 后续每轮选 argmax_t min_dist_to_selected[t]，就是 Max-Min 多样性候选集。
     min_dist_to_selected = distance[first_idx].contiguous()
     min_dist_to_selected[first_idx] = -1.0
 
@@ -112,6 +118,7 @@ def select_visual_token_indices(
         next_idx = torch.argmax(min_dist_to_selected)
         candidate_idx[candidate_pos] = next_idx
 
+        # 公式对应：加入新点 s 后，只需增量更新 min(d(t,S), d(t,s))。
         torch.minimum(
             min_dist_to_selected,
             distance[next_idx],
@@ -138,10 +145,14 @@ def select_visual_token_indices(
 
     candidate_distance[candidate_diag, candidate_diag] = 0.0
 
+    # 公式对应：局部密度 rho_i = exp(-mean_{j in KNN(i)} d(i,j)^2)，
+    # KNN 距离越小，rho 越大，表示候选 token 位于更密集区域。
     rho = torch.exp(-(knn_distance * knn_distance).mean(dim=-1))
     if eps > 0:
         rho.add_(torch.rand_like(rho) * eps)
 
+    # 公式对应：delta_i 是 token i 到“密度比它更高的 token”的最小距离；
+    # 如果没有更高密度点，则用它到其他点的最大距离。
     higher_density = rho.unsqueeze(0) > rho.unsqueeze(1)
     max_distance = candidate_distance.max()
     delta_matrix = torch.where(
@@ -155,6 +166,8 @@ def select_visual_token_indices(
     max_dist_to_others = candidate_distance.max(dim=-1).values
     delta = torch.where(has_higher_density, delta, max_dist_to_others)
 
+    # 公式对应：density peak 最终分数 gamma_i = rho_i * delta_i，
+    # 取 top-k 作为第一阶段保留的 visual token index。
     score = rho * delta
     selected_local = torch.topk(score, k=keep_num, largest=True).indices
     selected_idx = candidate_idx[selected_local]
@@ -188,4 +201,3 @@ def select_from_original_llava(
         sort_indices=sort_indices,
         eps=eps,
     )
-

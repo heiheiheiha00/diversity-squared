@@ -23,7 +23,67 @@ from llava.model import *
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
+_D_SQUARED_BOOL_KEYS = {
+    "use_d_squared",
+    "d_squared_inplace",
+    "d_squared_skip_visual_selector",
+    "d_squared_dump_selection_debug",
+    "d_squared_static_kv_cache",
+}
+_D_SQUARED_STR_KEYS = {"d_squared_query_score_mode", "d_squared_second_stage_method"}
+_D_SQUARED_FLOAT_KEYS = {"d_squared_qceg_tau"}
+_D_SQUARED_INT_KEYS = {
+    "d_squared_sys_length",
+    "d_squared_image_token_length",
+    "d_squared_visual_keep_count",
+    "d_squared_llm_keep_count",
+    "d_squared_agg_layer",
+}
+_D_SQUARED_KEYS = _D_SQUARED_BOOL_KEYS | _D_SQUARED_INT_KEYS | _D_SQUARED_STR_KEYS | _D_SQUARED_FLOAT_KEYS
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes", "y"}:
+            return True
+        if value in {"false", "0", "no", "n"}:
+            return False
+    raise ValueError(f"Cannot parse boolean D-squared value: {value!r}")
+
+
+def _pop_d_squared_kwargs(kwargs):
+    d_squared_kwargs = {}
+    for key in list(kwargs.keys()):
+        if key in _D_SQUARED_KEYS:
+            value = kwargs.pop(key)
+            if key in _D_SQUARED_BOOL_KEYS:
+                value = _as_bool(value)
+            elif key in _D_SQUARED_STR_KEYS:
+                value = str(value)
+            elif key in _D_SQUARED_FLOAT_KEYS:
+                value = float(value)
+            else:
+                value = int(value)
+            d_squared_kwargs[key] = value
+    return d_squared_kwargs
+
+
+def _apply_d_squared_config(model, d_squared_kwargs):
+    if not d_squared_kwargs:
+        return
+
+    for key, value in d_squared_kwargs.items():
+        setattr(model.config, key, value)
+
+    if hasattr(model, "model") and hasattr(model.model, "reset_d_squared"):
+        model.model.reset_d_squared()
+
+
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", **kwargs):
+    d_squared_kwargs = _pop_d_squared_kwargs(kwargs)
     kwargs = {"device_map": device_map, **kwargs}
 
     if "cuda" not in device :
@@ -147,5 +207,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         context_len = model.config.max_sequence_length
     else:
         context_len = 2048
+
+    _apply_d_squared_config(model, d_squared_kwargs)
 
     return tokenizer, model, image_processor, context_len

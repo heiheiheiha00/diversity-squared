@@ -30,7 +30,7 @@ pip install "pydantic<2,>=1" markdown2[all] numpy scikit-learn==1.2.2
 pip install gradio==3.35.2 gradio_client==0.2.9
 pip install requests httpx==0.24.0 uvicorn fastapi
 pip install einops==0.6.1 einops-exts==0.0.4 timm==0.6.13
-pip install datasets seaborn pycocoevalcap
+pip install datasets pycocoevalcap
 
 # Install local packages. Install LLaVA first, then the modified transformers.
 pip install -e src/LLaVA
