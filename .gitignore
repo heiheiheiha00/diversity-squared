@@ -1,13 +1,12 @@
-# Track only the D-squared workspace from this root.
+# Track only the D-QECG workspace from this root.
 /*
 !/.gitignore
-!/D_squared_method/
-!/visualize/
-!/D_squared_method/src/transformers/src/transformers/models/
-/D_squared_method/src/transformers/src/transformers/models/*
-!/D_squared_method/src/transformers/src/transformers/models/llama/
-/D_squared_method/src/transformers/src/transformers/models/llama/*
-!/D_squared_method/src/transformers/src/transformers/models/llama/*.py
+!/D-QECG/
+!/D-QECG/src/transformers/src/transformers/models/
+/D-QECG/src/transformers/src/transformers/models/*
+!/D-QECG/src/transformers/src/transformers/models/llama/
+/D-QECG/src/transformers/src/transformers/models/llama/*
+!/D-QECG/src/transformers/src/transformers/models/llama/*.py
 
 # Do not commit the upstream FastV workspace.
 /FastV/
@@ -26,6 +25,11 @@ dist/
 .venv/
 venv/
 env/
+.env
+.env.*
+!.env.example
+!.env.template
+.cache/
 
 # Model/data/output artifacts.
 models/
@@ -39,41 +43,22 @@ figures/
 *.bin
 *.pt
 *.pth
-!/D_squared_method/src/transformers/src/transformers/models/
-/D_squared_method/src/transformers/src/transformers/models/*
-!/D_squared_method/src/transformers/src/transformers/models/llama/
-/D_squared_method/src/transformers/src/transformers/models/llama/*
-!/D_squared_method/src/transformers/src/transformers/models/llama/*.py
+*.ckpt
+*.onnx
+!/D-QECG/src/transformers/src/transformers/models/
+/D-QECG/src/transformers/src/transformers/models/*
+!/D-QECG/src/transformers/src/transformers/models/llama/
+/D-QECG/src/transformers/src/transformers/models/llama/*
+!/D-QECG/src/transformers/src/transformers/models/llama/*.py
+
+# Logs and experiment trackers.
+*.log
+logs/
+runs/
+wandb/
 
 # OS/editor noise.
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-
-# Local experiment inputs/outputs.
-/visualize/experiments/sink_residual_cases/cases.jsonl
-!/visualize/outputs/
-/visualize/outputs/*
-!/visualize/outputs/aps_selector/
-/visualize/outputs/aps_selector/*
-!/visualize/outputs/aps_selector/.gitkeep
-!/visualize/outputs/visual_tower_attention/
-/visualize/outputs/visual_tower_attention/*
-!/visualize/outputs/visual_tower_attention/.gitkeep
-!/visualize/figures/
-/visualize/figures/*
-!/visualize/figures/knn_feature_selection/
-/visualize/figures/knn_feature_selection/*
-!/visualize/figures/knn_feature_selection/.gitkeep
-!/visualize/figures/aps_selector/
-/visualize/figures/aps_selector/*
-!/visualize/figures/aps_selector/.gitkeep
-!/visualize/figures/visual_tower_vs_knn/
-/visualize/figures/visual_tower_vs_knn/*
-!/visualize/figures/visual_tower_vs_knn/.gitkeep
-!/visualize/output/
-/visualize/output/*
-!/visualize/output/knn_feature_selection/
-/visualize/output/knn_feature_selection/*
-!/visualize/output/knn_feature_selection/.gitkeep
