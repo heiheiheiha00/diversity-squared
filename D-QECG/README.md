@@ -1,67 +1,82 @@
-# D-QECG
+# D² QCEG-IWFC
 
-D-QECG 是基于 LLaVA-1.5 的两阶段视觉 token 筛选项目。项目目录统一为
-`D-QECG`，Python 包名为 `dqecg`；内部保留 `d_squared_*` 配置键以兼容已有
-模型实现、检查点和 lmms-eval wrapper。
+This repository now uses the same deployment shape as Nuwa: a small editable
+Python package injects acceleration into an already loaded model, while model
+weights remain owned by the environment.  The repository ships fixed LLaVA and
+Transformers source snapshots for offline deployment; the runtime installs both
+snapshots without dependencies, while their Python dependencies come from the
+PyPI mirror.
 
-## 服务器目录
+## Supported models
 
-```text
-/home/majie/code_junle/D-QECG
-/home/majie/majie_data/base_model/llava-v1.5-7b
-/home/majie/majie_data/base_model/llava-v1.5-13b
-/home/majie/.cache/huggingface/datasets/lmms-lab___mme
-/home/majie/.conda/envs/D-QECG
-/home/majie/majie_data/D-QECG
+- LLaVA-1.5-7B (exact 32-layer paper schedule)
+- Qwen2.5-VL (3B/7B and other decoder depths through a depth-normalized schedule)
+
+The public API mirrors Nuwa's wrapper style:
+
+```python
+from dqecg import dqecg
+
+model = dqecg(model, budget=128, architecture="auto")
 ```
 
-原有 `/home/majie/.conda/envs/llava` 环境不会被读取或修改。
+The wrapper is instance-local: it does not replace global Transformers classes.
+It retains the existing acceleration details:
 
-## 第一次上服务器
+1. deterministic farthest-point pivots and full-coverage cluster means;
+2. post-image user-prompt normalized-cosine entropy with `eps=1e-6`;
+3. positive entropy-drop ranking at the first selection boundary;
+4. QCEG-weighted cosine feature coverage at the second boundary;
+5. physical hidden-state, mask, position, visual-map and KV-cache synchronization;
+6. removal of all remaining visual tokens at the final boundary;
+7. stable, sorted token indices and an inference-only guard.
 
-把整个 `D-QECG` 目录放入 `/home/majie/code_junle`，然后执行：
+For 32-layer LLaVA, the formal schedules are exactly:
+
+| B | N | K9 | K13 |
+|---:|---:|---:|---:|
+| 192 | 542 | 223 | 34 |
+| 128 | 361 | 154 | 21 |
+| 64 | 180 | 74 | 12 |
+
+Qwen2.5-VL retains the same stage ratios and scales the 9/13/24 boundaries to
+its decoder depth. Its entry count is selected to make the measured layer-average
+budget closest to `B`.
+
+## Server environment
+
+Create the isolated environment after copying the repository, the fixed LLaVA
+source, and the CUDA wheelhouse to the server:
 
 ```bash
-cd /home/majie/code_junle/D-QECG
 bash server/create_dqecg_env.sh
 ```
 
-脚本会：
+The environment is pinned to PyTorch 2.6.0/CUDA 12.4, Transformers 4.54.0 and
+lmms-eval 0.3.4. No GitHub or Hugging Face download is performed during setup:
+the fixed LLaVA commit `c121f0432da27facab705978f83c4ada465e46fd` must be
+uploaded under `src/LLaVA/`, and matching CPython-3.10 Linux CUDA wheels must
+be uploaded under `wheelhouse/`. Ordinary Python dependencies are retrieved
+from the configurable PyPI mirror.
 
-1. 在 `/home/majie/.conda/envs/D-QECG` 创建独立环境；
-2. 安装固定版本的 PyTorch、Transformers、lmms-eval 和 FlashAttention；
-3. 验证新环境；
-4. 使用本地 LLaVA-1.5-7B 和缓存的 MME 跑 2 条样本。
-
-MME 数据默认离线读取；首次运行如果缺少 LLaVA 引用的
-`openai/clip-vit-large-patch14-336`，会通过 Hugging Face 镜像下载到
-`/home/majie/.cache/huggingface`，后续可离线复用。
-
-只安装环境、不运行 MME：
+Run LLaVA MME:
 
 ```bash
-RUN_MME=false bash server/create_dqecg_env.sh
+MODEL_FAMILY=llava MODE=dqecg D2_BUDGET=128 bash server/run_mme.sh
 ```
 
-## 运行 MME
+The D-QECG adapter accepts `D2_ATTN_IMPLEMENTATION=auto|sdpa|eager|flash_attention_2`.
+`auto` prefers an installed FlashAttention-2 build and otherwise uses native
+PyTorch SDPA. See `server/README.md` for the ABI-checked offline wheel workflow.
+
+Run Qwen2.5-VL MME:
 
 ```bash
-conda run --no-capture-output \
-  -p /home/majie/.conda/envs/D-QECG \
-  bash /home/majie/code_junle/D-QECG/server/run_mme.sh
+MODEL_FAMILY=qwen2_5_vl \
+MODEL_PATH=/path/to/Qwen2.5-VL-7B-Instruct \
+MODE=dqecg D2_BUDGET=128 \
+bash server/run_mme.sh
 ```
 
-默认运行 LLaVA eager baseline。运行 D-QECG：
-
-```bash
-conda run --no-capture-output \
-  -p /home/majie/.conda/envs/D-QECG \
-  env MODE=dqecg \
-      D2_USE_CACHE=true \
-      D2_STATIC_KV_CACHE=true \
-      D2_ATTN_IMPLEMENTATION=flash_attention_2 \
-  bash /home/majie/code_junle/D-QECG/server/run_mme.sh
-```
-
-MME 的 `LIMIT` 必须是偶数。详细环境和 benchmark 用法见
-[server/README.md](server/README.md)。
+The D-QECG adapters are registered as `llava_dqecg` and
+`qwen2_5_vl_dqecg` in lmms-eval 0.3.4.

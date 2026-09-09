@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dqecg"
+version = "0.2.0"
+description = "D-squared question-conditioned visual-token acceleration for LVLMs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "torch==2.6.0",
+  "torchvision==0.21.0",
+  "transformers==4.54.0",
+  "accelerate==1.8.1",
+  "numpy==1.26.4",
+]
+
+[project.optional-dependencies]
+eval = [
+  "lmms-eval==0.3.4",
+  "datasets==4.0.0",
+  "evaluate==0.4.5",
+  "loguru==0.7.3",
+]
+flash = [
+  "flash-attn>=2.7,<3",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dqecg*"]
